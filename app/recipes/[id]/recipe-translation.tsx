@@ -9,7 +9,7 @@ import AiAdaptForm from "./ai-adapt-form";
 
 type Translation = {
   title: string;
-  ingredients: string[];
+  ingredients: { measure: string; ingredient: string }[];
   instructions: string;
 };
 
@@ -24,7 +24,7 @@ export default function RecipeTranslation({ meal }: { meal: MealDetails }) {
   const instructions = translation && !showOriginal ? translation.instructions : meal.instructions;
   const ingredients = meal.ingredients.map((ingredient, index) => ({
     ...ingredient,
-    name: translation && !showOriginal ? translation.ingredients[index] : ingredient.name,
+    name: translation && !showOriginal ? translation.ingredients[index].ingredient : ingredient.name,
   }));
 
   async function handleTranslate() {

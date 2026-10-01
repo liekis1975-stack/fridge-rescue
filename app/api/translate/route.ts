@@ -15,7 +15,7 @@ type TranslateRequest = {
 
 type TranslateResponse = {
   title: string
-  ingredients: string[]
+  ingredients: { measure: string; ingredient: string }[]
   instructions: string
 }
 
@@ -34,40 +34,31 @@ function isTranslateRequest(body: unknown): body is TranslateRequest {
 }
 
 function parseTranslation(text: string): TranslateResponse | null {
-  const cleanedText = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
-  const candidates = [cleanedText]
-  const objectStart = cleanedText.indexOf('{')
-  const objectEnd = cleanedText.lastIndexOf('}')
-  if (objectStart >= 0 && objectEnd > objectStart) {
-    candidates.push(cleanedText.slice(objectStart, objectEnd + 1))
-  }
+  try {
+    const value: unknown = JSON.parse(text.trim())
+    if (!value || typeof value !== 'object') return null
+    const result = value as Record<string, unknown>
+    if (
+      typeof result.title !== 'string' ||
+      typeof result.instructions !== 'string' ||
+      !Array.isArray(result.ingredients) ||
+      !result.ingredients.every((item) => {
+        if (!item || typeof item !== 'object') return false
+        const ingredient = item as Record<string, unknown>
+        return typeof ingredient.measure === 'string' &&
+          typeof ingredient.ingredient === 'string' &&
+          ingredient.ingredient.trim() !== ''
+      })
+    ) return null
 
-  for (const candidate of candidates) {
-    try {
-      const value: unknown = JSON.parse(candidate)
-      if (!value || typeof value !== 'object') continue
-      const result = value as Record<string, unknown>
-      const ingredientValues = Array.isArray(result.ingredients)
-        ? result.ingredients
-        : result.ingredientNames
-      if (
-        typeof result.title !== 'string' ||
-        typeof result.instructions !== 'string' ||
-        !Array.isArray(ingredientValues) ||
-        !ingredientValues.every((name) => typeof name === 'string')
-      ) continue
-
-      return {
-        title: result.title,
-        ingredients: ingredientValues,
-        instructions: result.instructions,
-      }
-    } catch {
-      // Pabandome kitą galimą JSON fragmentą.
+    return {
+      title: result.title,
+      ingredients: result.ingredients as { measure: string; ingredient: string }[],
+      instructions: result.instructions,
     }
+  } catch {
+    return null
   }
-
-  return null
 }
 
 function buildPrompt(data: TranslateRequest): string {
@@ -82,9 +73,9 @@ Jei ingrediento tekstas neįprastas, vis tiek išversk jo pavadinimą kiek įman
 Ingredientų kiekius ir matavimo vienetus palik tokius, kokie pateikti.
 
 Grąžink tik struktūruotą JSON objektą, be Markdown ir be papildomo teksto, tiksliai tokios struktūros:
-{"title":"...","ingredients":["..."],"instructions":"..."}
+{"title":"...","ingredients":[{"measure":"originalus kiekis","ingredient":"lietuviškas pavadinimas"}],"instructions":"..."}
 
-Svarbu: ingredients masyve turi būti lygiai ${data.ingredients.length} elementų, tokia pačia tvarka kaip pateikta. Į ingredients įrašyk tik išverstus pavadinimus, be kiekių ir matavimo vienetų. Kiekiai ir vienetai bus išsaugoti programoje.
+Svarbu: ingredients masyve turi būti lygiai ${data.ingredients.length} objektų, tokia pačia tvarka kaip pateikta. Į measure nukopijuok originalų kiekį ir matavimo vienetą nekeisdamas nė vieno simbolio. Į ingredient įrašyk tik išverstą pavadinimą.
 
 === RECEPTO PAVADINIMAS ===
 ${data.mealName}
@@ -127,7 +118,14 @@ export async function POST(request: Request) {
               title: { type: Type.STRING },
               ingredients: {
                 type: Type.ARRAY,
-                items: { type: Type.STRING },
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    measure: { type: Type.STRING },
+                    ingredient: { type: Type.STRING },
+                  },
+                  required: ['measure', 'ingredient'],
+                },
               },
               instructions: { type: Type.STRING },
             },
@@ -141,15 +139,18 @@ export async function POST(request: Request) {
     ])
     const translation = parseTranslation(response.text ?? '')
 
-    if (
-      !translation ||
-      translation.ingredients.length !== body.ingredients.length ||
-      translation.ingredients.some((ingredient) => !ingredient.trim())
-    ) {
+    if (!translation || translation.ingredients.length !== body.ingredients.length) {
       return Response.json({ error: 'Gemini grąžino netinkamą vertimo formatą.' }, { status: 502 })
     }
 
-    return Response.json(translation)
+    return Response.json({
+      title: translation.title,
+      ingredients: translation.ingredients.map((ingredient, index) => ({
+        measure: body.ingredients[index].measure,
+        ingredient: ingredient.ingredient,
+      })),
+      instructions: translation.instructions,
+    })
   } catch (error) {
     console.error('Gemini recipe translation failed:', error)
     return Response.json({ error: 'Vertimo paslauga laikinai nepasiekiama.' }, { status: 502 })
