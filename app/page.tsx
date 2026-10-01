@@ -17,6 +17,9 @@ export default function Home() {
   const [searchedFor, setSearchedFor] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [translatedTitles, setTranslatedTitles] = useState<Record<string, string> | null>(null);
+  const [translatingTitles, setTranslatingTitles] = useState(false);
+  const [translationError, setTranslationError] = useState("");
   const requestInProgress = useRef(false);
 
   async function handleSearch(event: FormEvent<HTMLFormElement>) {
@@ -36,6 +39,8 @@ export default function Home() {
     setError("");
     setMeals(null);
     setSearchedFor("");
+    setTranslatedTitles(null);
+    setTranslationError("");
 
     const startTime = performance.now();
     let httpStatus: number | string = "Tinklo klaida";
@@ -71,6 +76,47 @@ export default function Home() {
       });
       requestInProgress.current = false;
       setLoading(false);
+    }
+  }
+
+  async function handleTranslateTitles() {
+    if (!meals || meals.length === 0 || translatingTitles) return;
+
+    setTranslatingTitles(true);
+    setTranslationError("");
+    const startTime = performance.now();
+    let httpStatus: number | string = "Tinklo klaida";
+    let success = false;
+
+    try {
+      const response = await fetch("/api/translate-titles", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ titles: meals.map((meal) => meal.strMeal) }),
+      });
+      httpStatus = response.status;
+      const data: { titles?: string[]; error?: string } = await response.json();
+
+      if (!response.ok || !data.titles || data.titles.length !== meals.length) {
+        throw new Error(data.error ?? "Titles translation failed");
+      }
+
+      setTranslatedTitles(Object.fromEntries(meals.map((meal, index) => [meal.idMeal, data.titles?.[index] ?? meal.strMeal])));
+      success = true;
+    } catch {
+      setTranslationError("Nepavyko išversti pavadinimų. Rodomi originalai.");
+    } finally {
+      recordLog({
+        system: "Gemini",
+        endpoint: "/api/translate-titles",
+        method: "POST",
+        status: httpStatus,
+        success,
+        durationMs: Math.round(performance.now() - startTime),
+        path: "Fridge Rescue → Gemini",
+        timestamp: new Date().toLocaleTimeString("lt-LT"),
+      });
+      setTranslatingTitles(false);
     }
   }
 
@@ -110,15 +156,23 @@ export default function Home() {
         {error && <p role="alert" className="mt-8 text-red-700">{error}</p>}
         {meals !== null && !loading && !error && (
           <section className="mt-12" aria-label="Paieškos rezultatai">
-            <h2 className="mb-6 text-2xl font-bold">Receptai pagal „{searchedFor}“</h2>
+            <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
+              <h2 className="text-2xl font-bold">Receptai pagal „{searchedFor}“</h2>
+              {meals.length > 0 && !translatedTitles && (
+                <button type="button" onClick={handleTranslateTitles} disabled={translatingTitles} className="rounded-xl bg-orange-700 px-4 py-2 text-sm font-semibold text-white hover:bg-orange-800 disabled:cursor-not-allowed disabled:opacity-60">
+                  {translatingTitles ? "Verčiama…" : "🌐 Išversti pavadinimus į LT"}
+                </button>
+              )}
+            </div>
+            {translationError && <p role="alert" className="mb-5 text-sm text-red-700">{translationError}</p>}
             {meals.length > 0 ? (
               <ul className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
                 {meals.map((meal) => (
                   <li key={meal.idMeal} className="overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-stone-200">
                     <Link href={`/recipes/${meal.idMeal}`} className="block h-full transition hover:bg-orange-50 focus-visible:outline-2 focus-visible:outline-orange-700">
-                      <Image src={meal.strMealThumb} alt={meal.strMeal} width={400} height={300} className="aspect-[4/3] w-full object-cover" />
+                      <Image src={meal.strMealThumb} alt={translatedTitles?.[meal.idMeal] ?? meal.strMeal} width={400} height={300} className="aspect-[4/3] w-full object-cover" />
                       <div className="p-5">
-                        <h3 className="text-xl font-semibold">{meal.strMeal}</h3>
+                        <h3 className="text-xl font-semibold">{translatedTitles?.[meal.idMeal] ?? meal.strMeal}</h3>
                         <p className="mt-2 text-sm text-stone-500">Recepto ID: {meal.idMeal}</p>
                       </div>
                     </Link>
