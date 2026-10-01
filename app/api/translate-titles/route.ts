@@ -4,6 +4,7 @@ export const runtime = 'nodejs'
 
 const MODEL = 'gemini-3.8-flash'
 const MAX_TITLES = 50
+const GEMINI_TIMEOUT_MS = 15000
 
 function parseTitles(text: string): string[] | null {
   const jsonText = text.trim().replace(/^```json\s*/i, '').replace(/\s*```$/, '')
@@ -45,10 +46,15 @@ ${titles.map((title, index) => `${index + 1}. ${title}`).join('\n')}`
 
   try {
     const ai = new GoogleGenAI({ apiKey })
-    const response = await ai.models.generateContent({
-      model: MODEL,
-      contents: prompt,
-    })
+    const response = await Promise.race([
+      ai.models.generateContent({
+        model: MODEL,
+        contents: prompt,
+      }),
+      new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error('Gemini request timed out')), GEMINI_TIMEOUT_MS)
+      }),
+    ])
     const translatedTitles = parseTitles(response.text ?? '')
 
     if (!translatedTitles || translatedTitles.length !== titles.length || translatedTitles.some((title) => !title.trim())) {

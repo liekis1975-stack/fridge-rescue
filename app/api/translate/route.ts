@@ -1,8 +1,9 @@
-import { GoogleGenAI } from '@google/genai'
+import { GoogleGenAI, Type } from '@google/genai'
 
 export const runtime = 'nodejs'
 
 const MODEL = 'gemini-3.8-flash'
+const GEMINI_TIMEOUT_MS = 15000
 
 type Ingredient = { name: string; measure: string }
 
@@ -14,7 +15,7 @@ type TranslateRequest = {
 
 type TranslateResponse = {
   title: string
-  ingredientNames: string[]
+  ingredients: string[]
   instructions: string
 }
 
@@ -33,26 +34,40 @@ function isTranslateRequest(body: unknown): body is TranslateRequest {
 }
 
 function parseTranslation(text: string): TranslateResponse | null {
-  const jsonText = text.trim().replace(/^```json\s*/i, '').replace(/\s*```$/, '')
-  try {
-    const value: unknown = JSON.parse(jsonText)
-    if (!value || typeof value !== 'object') return null
-    const result = value as Record<string, unknown>
-    if (
-      typeof result.title !== 'string' ||
-      typeof result.instructions !== 'string' ||
-      !Array.isArray(result.ingredientNames) ||
-      !result.ingredientNames.every((name) => typeof name === 'string')
-    ) return null
-
-    return {
-      title: result.title,
-      ingredientNames: result.ingredientNames,
-      instructions: result.instructions,
-    }
-  } catch {
-    return null
+  const cleanedText = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
+  const candidates = [cleanedText]
+  const objectStart = cleanedText.indexOf('{')
+  const objectEnd = cleanedText.lastIndexOf('}')
+  if (objectStart >= 0 && objectEnd > objectStart) {
+    candidates.push(cleanedText.slice(objectStart, objectEnd + 1))
   }
+
+  for (const candidate of candidates) {
+    try {
+      const value: unknown = JSON.parse(candidate)
+      if (!value || typeof value !== 'object') continue
+      const result = value as Record<string, unknown>
+      const ingredientValues = Array.isArray(result.ingredients)
+        ? result.ingredients
+        : result.ingredientNames
+      if (
+        typeof result.title !== 'string' ||
+        typeof result.instructions !== 'string' ||
+        !Array.isArray(ingredientValues) ||
+        !ingredientValues.every((name) => typeof name === 'string')
+      ) continue
+
+      return {
+        title: result.title,
+        ingredients: ingredientValues,
+        instructions: result.instructions,
+      }
+    } catch {
+      // Pabandome kitą galimą JSON fragmentą.
+    }
+  }
+
+  return null
 }
 
 function buildPrompt(data: TranslateRequest): string {
@@ -60,15 +75,16 @@ function buildPrompt(data: TranslateRequest): string {
     .map((ingredient, index) => `${index + 1}. Pavadinimas: ${ingredient.name} | Kiekis ir vienetas: ${ingredient.measure || '(nenurodyta)'}`)
     .join('\n')
 
-  return `Išversk šį receptą į taisyklingą, natūralią lietuvių kalbą.
+  return `Išversk pateiktą receptą į natūralią lietuvių kalbą.
 Nekeisk ingredientų kiekių, matavimo vienetų ar gaminimo prasmės.
-Nepridėk naujos informacijos ir nekurk naujų ingredientų.
-Ingredientų pavadinimus ir gaminimo žingsnius išversk į lietuvių kalbą.
+Nepridėk naujų ingredientų.
+Jei ingrediento tekstas neįprastas, vis tiek išversk jo pavadinimą kiek įmanoma natūraliau.
+Ingredientų kiekius ir matavimo vienetus palik tokius, kokie pateikti.
 
-Grąžink tik JSON objektą, be Markdown ir be papildomo teksto, tiksliai tokios struktūros:
-{"title":"...","ingredientNames":["..."],"instructions":"..."}
+Grąžink tik struktūruotą JSON objektą, be Markdown ir be papildomo teksto, tiksliai tokios struktūros:
+{"title":"...","ingredients":["..."],"instructions":"..."}
 
-Svarbu: ingredientNames masyve turi būti lygiai ${data.ingredients.length} elementų, tokia pačia tvarka kaip pateikta. Į ingredientNames įrašyk tik išverstus pavadinimus, be kiekių ir matavimo vienetų. Kiekiai ir vienetai bus išsaugoti programoje.
+Svarbu: ingredients masyve turi būti lygiai ${data.ingredients.length} elementų, tokia pačia tvarka kaip pateikta. Į ingredients įrašyk tik išverstus pavadinimus, be kiekių ir matavimo vienetų. Kiekiai ir vienetai bus išsaugoti programoje.
 
 === RECEPTO PAVADINIMAS ===
 ${data.mealName}
@@ -99,13 +115,37 @@ export async function POST(request: Request) {
 
   try {
     const ai = new GoogleGenAI({ apiKey })
-    const response = await ai.models.generateContent({
-      model: MODEL,
-      contents: buildPrompt(body),
-    })
+    const response = await Promise.race([
+      ai.models.generateContent({
+        model: MODEL,
+        contents: buildPrompt(body),
+        config: {
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              title: { type: Type.STRING },
+              ingredients: {
+                type: Type.ARRAY,
+                items: { type: Type.STRING },
+              },
+              instructions: { type: Type.STRING },
+            },
+            required: ['title', 'ingredients', 'instructions'],
+          },
+        },
+      }),
+      new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error('Gemini request timed out')), GEMINI_TIMEOUT_MS)
+      }),
+    ])
     const translation = parseTranslation(response.text ?? '')
 
-    if (!translation || translation.ingredientNames.length !== body.ingredients.length) {
+    if (
+      !translation ||
+      translation.ingredients.length !== body.ingredients.length ||
+      translation.ingredients.some((ingredient) => !ingredient.trim())
+    ) {
       return Response.json({ error: 'Gemini grąžino netinkamą vertimo formatą.' }, { status: 502 })
     }
 

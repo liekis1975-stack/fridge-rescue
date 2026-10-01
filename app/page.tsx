@@ -93,6 +93,7 @@ export default function Home() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ titles: meals.map((meal) => meal.strMeal) }),
+        signal: AbortSignal.timeout(20000),
       });
       httpStatus = response.status;
       const data: { titles?: string[]; error?: string } = await response.json();
@@ -104,8 +105,9 @@ export default function Home() {
       setTranslatedTitles(Object.fromEntries(meals.map((meal, index) => [meal.idMeal, data.titles?.[index] ?? meal.strMeal])));
       success = true;
     } catch {
-      setTranslationError("Nepavyko išversti pavadinimų. Rodomi originalai.");
+      setTranslationError("Nepavyko išversti recepto. Rodomas originalas.");
     } finally {
+      setTranslatingTitles(false);
       recordLog({
         system: "Gemini",
         endpoint: "/api/translate-titles",
@@ -116,7 +118,6 @@ export default function Home() {
         path: "Fridge Rescue → Gemini",
         timestamp: new Date().toLocaleTimeString("lt-LT"),
       });
-      setTranslatingTitles(false);
     }
   }
 

@@ -9,7 +9,7 @@ import AiAdaptForm from "./ai-adapt-form";
 
 type Translation = {
   title: string;
-  ingredientNames: string[];
+  ingredients: string[];
   instructions: string;
 };
 
@@ -24,7 +24,7 @@ export default function RecipeTranslation({ meal }: { meal: MealDetails }) {
   const instructions = translation && !showOriginal ? translation.instructions : meal.instructions;
   const ingredients = meal.ingredients.map((ingredient, index) => ({
     ...ingredient,
-    name: translation && !showOriginal ? translation.ingredientNames[index] : ingredient.name,
+    name: translation && !showOriginal ? translation.ingredients[index] : ingredient.name,
   }));
 
   async function handleTranslate() {
@@ -45,6 +45,7 @@ export default function RecipeTranslation({ meal }: { meal: MealDetails }) {
           ingredients: meal.ingredients,
           instructions: meal.instructions,
         }),
+        signal: AbortSignal.timeout(20000),
       });
       httpStatus = response.status;
       const data: Partial<Translation> & { error?: string } = await response.json();
@@ -53,15 +54,15 @@ export default function RecipeTranslation({ meal }: { meal: MealDetails }) {
         !response.ok ||
         typeof data.title !== "string" ||
         typeof data.instructions !== "string" ||
-        !Array.isArray(data.ingredientNames) ||
-        data.ingredientNames.length !== meal.ingredients.length
+        !Array.isArray(data.ingredients) ||
+        data.ingredients.length !== meal.ingredients.length
       ) {
         throw new Error(data.error ?? "Translation failed");
       }
 
       setTranslation({
         title: data.title,
-        ingredientNames: data.ingredientNames,
+        ingredients: data.ingredients,
         instructions: data.instructions,
       });
       setShowOriginal(false);
@@ -69,6 +70,7 @@ export default function RecipeTranslation({ meal }: { meal: MealDetails }) {
     } catch {
       setError("Nepavyko išversti recepto. Rodomas originalas.");
     } finally {
+      setLoading(false);
       recordLog({
         system: "Gemini",
         endpoint: "/api/translate",
@@ -79,7 +81,6 @@ export default function RecipeTranslation({ meal }: { meal: MealDetails }) {
         path: "Fridge Rescue → Gemini",
         timestamp: new Date().toLocaleTimeString("lt-LT"),
       });
-      setLoading(false);
     }
   }
 
