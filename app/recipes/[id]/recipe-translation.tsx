@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import Image from "next/image";
+import Link from "next/link";
 import type { MealDetails } from "@/lib/themealdb";
 import { useDevMode } from "@/lib/dev-mode-context";
 import SaveRecipeButton from "./save-recipe-button";
@@ -13,12 +14,22 @@ type Translation = {
   instructions: string;
 };
 
+type KitchenCheckResponse = {
+  answer?: string;
+  error?: string;
+  database?: { status: number | string; durationMs: number };
+};
+
 export default function RecipeTranslation({ meal }: { meal: MealDetails }) {
   const { recordLog } = useDevMode();
   const [translation, setTranslation] = useState<Translation | null>(null);
   const [showOriginal, setShowOriginal] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [kitchenCheck, setKitchenCheck] = useState("");
+  const [checkingKitchen, setCheckingKitchen] = useState(false);
+  const [kitchenCheckError, setKitchenCheckError] = useState("");
+  const [needsKitchenAuth, setNeedsKitchenAuth] = useState(false);
 
   const title = translation && !showOriginal ? translation.title : meal.strMeal;
   const instructions = translation && !showOriginal ? translation.instructions : meal.instructions;
@@ -26,6 +37,69 @@ export default function RecipeTranslation({ meal }: { meal: MealDetails }) {
     ...ingredient,
     name: translation && !showOriginal ? translation.ingredients[index].ingredient : ingredient.name,
   }));
+
+  async function handleKitchenCheck() {
+    if (checkingKitchen) return;
+
+    setCheckingKitchen(true);
+    setKitchenCheck("");
+    setKitchenCheckError("");
+    setNeedsKitchenAuth(false);
+
+    const startTime = performance.now();
+    let httpStatus: number | string = "Tinklo klaida";
+    let success = false;
+    let databaseLog: KitchenCheckResponse["database"];
+
+    try {
+      const response = await fetch("/api/kitchen-check", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mealName: meal.strMeal,
+          ingredients: meal.ingredients,
+        }),
+        signal: AbortSignal.timeout(30000),
+      });
+      httpStatus = response.status;
+      const data: KitchenCheckResponse = await response.json();
+      databaseLog = data.database;
+
+      if (!response.ok || typeof data.answer !== "string") {
+        if (response.status === 401) setNeedsKitchenAuth(true);
+        throw new Error(data.error ?? "Nepavyko patikrinti recepto.");
+      }
+
+      setKitchenCheck(data.answer);
+      success = true;
+    } catch (cause) {
+      setKitchenCheckError(cause instanceof Error ? cause.message : "Nepavyko patikrinti recepto.");
+    } finally {
+      setCheckingKitchen(false);
+      if (databaseLog) {
+        recordLog({
+          system: "Supabase",
+          endpoint: "/rest/v1/kitchen_items",
+          method: "GET",
+          status: databaseLog.status,
+          success: typeof databaseLog.status === "number" && databaseLog.status >= 200 && databaseLog.status < 300,
+          durationMs: databaseLog.durationMs,
+          path: "Fridge Rescue → Supabase",
+          timestamp: new Date().toLocaleTimeString("lt-LT"),
+        });
+      }
+      recordLog({
+        system: "Gemini",
+        endpoint: "/api/kitchen-check",
+        method: "POST",
+        status: httpStatus,
+        success,
+        durationMs: Math.round(performance.now() - startTime),
+        path: "Fridge Rescue → Gemini",
+        timestamp: new Date().toLocaleTimeString("lt-LT"),
+      });
+    }
+  }
 
   async function handleTranslate() {
     if (loading) return;
@@ -111,9 +185,31 @@ export default function RecipeTranslation({ meal }: { meal: MealDetails }) {
             )}
           </div>
           {error && <p role="alert" className="mt-3 text-sm text-red-700">{error}</p>}
+          <div className="mt-4">
+            <button
+              type="button"
+              onClick={handleKitchenCheck}
+              disabled={checkingKitchen}
+              className="rounded-xl border border-orange-700 px-4 py-2 font-semibold text-orange-800 hover:bg-orange-50 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {checkingKitchen ? "Tikrinama…" : "🥕 Patikrinti pagal mano virtuvę"}
+            </button>
+            {kitchenCheckError && (
+              <p role="alert" className="mt-3 text-sm text-red-700">
+                {kitchenCheckError}{" "}
+                {needsKitchenAuth && <><Link href="/auth" className="font-semibold underline">Prisijunkite</Link>, kad galėtumėte naudotis „Mano virtuvė“.</>}
+              </p>
+            )}
+          </div>
           <SaveRecipeButton mealId={meal.idMeal} title={meal.strMeal} imageUrl={meal.strMealThumb} />
         </div>
       </div>
+      {kitchenCheck && (
+        <section aria-live="polite" className="mt-8 rounded-2xl bg-white p-6 shadow-sm ring-1 ring-stone-200">
+          <h2 className="text-2xl font-bold">Receptas pagal jūsų virtuvę</h2>
+          <p className="mt-4 whitespace-pre-line leading-7 text-stone-700">{kitchenCheck}</p>
+        </section>
+      )}
       <div className="mt-8 grid gap-8 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
         <section className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-stone-200">
           <h2 className="text-2xl font-bold">Ingredientai</h2>

@@ -127,6 +127,7 @@ export default function Home() {
         <div className="mb-8 flex flex-wrap items-center justify-end gap-5">
           <Link href="/my-recipes" className="text-sm font-semibold text-orange-700 hover:underline">Mano receptai</Link>
           <Link href="/my-ai-recipes" className="text-sm font-semibold text-orange-700 hover:underline">Mano AI receptai</Link>
+          <Link href="/my-kitchen" className="text-sm font-semibold text-orange-700 hover:underline">Mano virtuvė</Link>
           <AuthStatus />
         </div>
         <p className="mb-3 text-sm font-bold uppercase tracking-widest text-orange-700">Fridge Rescue</p>
